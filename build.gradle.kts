@@ -1,0 +1,430 @@
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.gradle.api.tasks.bundling.Compression
+import java.io.ByteArrayOutputStream
+
+plugins {
+    kotlin("jvm") version "2.1.0"
+    id("org.jetbrains.compose") version "1.7.3"
+    id("org.jetbrains.kotlin.plugin.compose") version "2.1.0"
+}
+
+group = "com.wifiaudiostreaming"
+version = "6.0"
+
+val appVersion = "5.1.0"
+
+val displayVersion = appVersion.split(".").let { p ->
+    val major = ((p.getOrNull(0)?.toIntOrNull() ?: 0) - 4).coerceAtLeast(0)
+    (listOf(major.toString()) + p.drop(1)).joinToString(".")
+}
+
+tasks.register("generateDisplayVersionFile") {
+    val outFile = layout.buildDirectory.file("display-version.txt")
+    outputs.file(outFile)
+    doLast {
+        outFile.get().asFile.apply { parentFile.mkdirs() }.writeText(displayVersion)
+    }
+}
+
+tasks.register("generateVersionProperties") {
+    val outFile = layout.projectDirectory.file("src/main/resources/version.properties").asFile
+    outputs.file(outFile)
+    doLast {
+        outFile.writeText("app.version=$appVersion\n")
+    }
+}
+tasks.named("processResources") {
+    dependsOn("generateVersionProperties")
+}
+
+repositories {
+    google()
+    mavenCentral()
+    maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
+}
+
+// ─── Rilevamento piattaforma ──────────────────────────────────────────────────
+val osName = System.getProperty("os.name").lowercase()
+val osArch = System.getProperty("os.arch").lowercase()
+
+val isWindows = osName.contains("win")
+val isMac     = osName.contains("mac")
+val isLinux   = !isWindows && !isMac
+
+val nativeOsDir = when {
+    isWindows -> "windows"
+    isMac     -> "macos"
+    else      -> "linux"
+}
+val nativeArchDir = when {
+    osArch.contains("aarch64") || osArch.contains("arm64") -> "arm64"
+    else -> "x86_64"
+}
+
+// ─── Ricerca di cmake.exe su Windows ─────────────────────────────────────────
+// Gradle eredita un PATH ristretto che spesso non include CMake anche quando
+// è installato tramite Visual Studio, Scoop, o Chocolatey.
+// Questa funzione cerca cmake nei percorsi noti e restituisce il path assoluto.
+fun findCmakeExecutable(): String? {
+    if (!isWindows) return "cmake"
+
+    try {
+        val check = ProcessBuilder("cmake", "--version")
+            .redirectErrorStream(true).start()
+        if (check.waitFor() == 0) return "cmake"
+    } catch (_: Exception) {}
+
+    val candidates = mutableListOf<String>()
+    val programFiles = listOf(
+        System.getenv("ProgramFiles") ?: "C:\\Program Files",
+        System.getenv("ProgramFiles(x86)") ?: "C:\\Program Files (x86)"
+    )
+    for (pf in programFiles) {
+        for (vsYear in listOf("2022", "2019", "2017")) {
+            for (edition in listOf("Community", "Professional", "Enterprise", "BuildTools")) {
+                candidates += "$pf\\Microsoft Visual Studio\\$vsYear\\$edition\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe"
+            }
+        }
+    }
+
+    val localAppData = System.getenv("LOCALAPPDATA") ?: ""
+    if (localAppData.isNotEmpty()) {
+        candidates += "$localAppData\\Programs\\CLion\\bin\\cmake\\win\\x64\\bin\\cmake.exe"
+        candidates += "$localAppData\\Programs\\CLion\\bin\\cmake\\win\\bin\\cmake.exe"
+    }
+
+    candidates += "C:\\Program Files\\CMake\\bin\\cmake.exe"
+    candidates += "C:\\Program Files (x86)\\CMake\\bin\\cmake.exe"
+
+    val userProfile = System.getenv("USERPROFILE") ?: ""
+    if (userProfile.isNotEmpty()) {
+        candidates += "$userProfile\\scoop\\apps\\cmake\\current\\bin\\cmake.exe"
+        candidates += "$userProfile\\scoop\\shims\\cmake.exe"
+    }
+
+    candidates += "C:\\ProgramData\\chocolatey\\bin\\cmake.exe"
+    candidates += "C:\\tools\\cmake\\bin\\cmake.exe"
+    candidates += "C:\\Program Files\\CMake\\bin\\cmake.exe"
+
+    for (path in candidates) {
+        if (file(path).exists()) {
+            println("[NativeBuild] CMake trovato: $path")
+            return path
+        }
+    }
+
+    println("[NativeBuild] cmake.exe non trovato. Verranno usate le librerie native pre-compilate.")
+    return null
+}
+
+fun findWindowsGenerator(cmakePath: String): List<String> {
+    return listOf(
+        "-G", "MinGW Makefiles"
+    )
+}
+
+fun programFilesCandidatesForNinja(): List<String> {
+    val pf = System.getenv("ProgramFiles") ?: "C:\\Program Files"
+    return listOf("2022", "2019", "2017").flatMap { year ->
+        listOf("Community", "Professional", "Enterprise", "BuildTools").map { ed ->
+            "$pf\\Microsoft Visual Studio\\$year\\$ed\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja\\ninja.exe"
+        }
+    }
+}
+
+val nativeSrcDir    = file("src/main/native")
+val nativeBuildDir  = file("${layout.buildDirectory.get()}/native-build")
+val nativeOutputDir = file("${layout.buildDirectory.get()}/native-build/output")
+val nativeResDir    = file("src/main/resources/native/$nativeOsDir/$nativeArchDir")
+
+val compileNative by tasks.registering(Exec::class) {
+    description = "Configura il progetto CMake per audio_engine"
+    group       = "build"
+    onlyIf { findCmakeExecutable() != null }
+
+    doFirst {
+        nativeBuildDir.mkdirs()
+        nativeResDir.mkdirs()
+    }
+
+    val javaHome = System.getProperty("java.home")?.replace("\\", "/")
+        ?: throw GradleException("java.home non trovato. Assicurati di usare JDK 17.")
+
+    val cmakePath = findCmakeExecutable() ?: "cmake"
+
+    workingDir = nativeBuildDir
+
+    val cmakeArgs = mutableListOf(
+        cmakePath,
+        nativeSrcDir.absolutePath,
+        "-DJAVA_HOME=$javaHome",
+        "-DCMAKE_BUILD_TYPE=Release"
+    )
+
+    if (isWindows) {
+        cmakeArgs += findWindowsGenerator(cmakePath)
+    } else {
+        cmakeArgs += listOf("-G", "Unix Makefiles")
+    }
+
+    commandLine(cmakeArgs)
+}
+
+val buildNative by tasks.registering(Exec::class) {
+    description = "Compila audio_engine tramite cmake --build"
+    group       = "build"
+    onlyIf { findCmakeExecutable() != null }
+    dependsOn(compileNative)
+
+    val cmakePath = findCmakeExecutable() ?: "cmake"
+    workingDir = nativeBuildDir
+    commandLine(cmakePath, "--build", ".", "--config", "Release", "--parallel")
+}
+
+val copyNativeLib by tasks.registering(Copy::class) {
+    description = "Copia la libreria nativa in src/main/resources/native/"
+    group       = "build"
+    dependsOn(buildNative)
+
+    from(nativeOutputDir) {
+        include("**/*.so", "**/*.dll", "**/*.dylib")
+    }
+    into(nativeResDir)
+
+    eachFile {
+        path = name
+    }
+    includeEmptyDirs = false
+}
+
+tasks.named("compileKotlin") {
+    // depend on copyNativeLib only when cmake is available
+    if (findCmakeExecutable() != null) {
+        dependsOn(copyNativeLib)
+    }
+}
+
+tasks.named<ProcessResources>("processResources") {
+    if (findCmakeExecutable() != null) {
+        dependsOn(copyNativeLib)
+    }
+}
+
+// ─── Dipendenze ───────────────────────────────────────────────────────────────
+dependencies {
+    implementation(compose.desktop.currentOs)
+    implementation(compose.material3)
+    implementation(compose.materialIconsExtended)
+
+    val ktorVersion = "3.0.3"
+    implementation("io.ktor:ktor-network:$ktorVersion")
+    implementation("io.ktor:ktor-network-tls:$ktorVersion")
+
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+
+    val bcVersion = "1.78.1"
+    implementation("org.bouncycastle:bcprov-jdk18on:$bcVersion")
+    implementation("org.bouncycastle:bctls-jdk18on:$bcVersion")
+    implementation("org.bouncycastle:bcpkix-jdk18on:$bcVersion")
+
+    // JavaCV rimane per gli encoder AAC e Opus (HTTP server) —
+    // NON viene più usato per la cattura audio (sostituita da AudioEngine JNI).
+    val javacvVersion = "1.5.10"
+    val targetPlatform = when {
+        isWindows -> if (osArch.contains("64")) "windows-x86_64" else "windows-x86"
+        isMac     -> if (osArch.contains("aarch64") || osArch.contains("arm64")) "macosx-arm64" else "macosx-x86_64"
+        else      -> if (osArch.contains("aarch64") || osArch.contains("arm64")) "linux-arm64" else "linux-x86_64"
+    }
+    implementation("org.bytedeco:javacv:$javacvVersion")
+    implementation("org.bytedeco:ffmpeg:$javacvVersion:$targetPlatform")
+    implementation("org.bytedeco:javacpp:$javacvVersion:$targetPlatform")
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.dorkbox:SystemTray:4.4")
+    implementation("org.slf4j:slf4j-nop:2.0.9")
+}
+
+// ─── Packaging Compose Desktop ────────────────────────────────────────────────
+compose.desktop {
+    application {
+        mainClass = "MainKt"
+
+        val baseArgs = mutableListOf("-Djava.net.preferIPv6Addresses=false")
+        if (isWindows) {
+            baseArgs.add("-XX:UseAVX=2")
+        }
+        if (isLinux) {
+            baseArgs.add("-Dskiko.renderApi=SOFTWARE")
+        }
+        jvmArgs += baseArgs
+
+        nativeDistributions {
+            targetFormats(TargetFormat.Dmg, TargetFormat.Deb, TargetFormat.Rpm)
+
+            packageName = "WiFi Audio Streaming"
+            packageVersion = appVersion
+
+            modules(
+                "java.desktop",
+                "java.instrument",
+                "java.scripting",
+                "java.naming",
+                "java.sql",
+                "java.xml",
+                "jdk.unsupported",
+                "java.net.http"
+            )
+
+            buildTypes.release.proguard {
+                isEnabled.set(false)
+                configurationFiles.from(project.file("proguard-rules.pro"))
+            }
+
+            windows {
+                iconFile.set(project.file("src/main/resources/app_icon.ico"))
+                shortcut = true
+                menu = true
+            }
+
+            macOS {
+                iconFile.set(project.file("src/main/resources/app_icon.icns"))
+                bundleID = "com.wifiaudiostreaming"
+                infoPlist {
+                    extraKeysRawXml = """
+                        <key>CFBundleURLTypes</key>
+                        <array>
+                          <dict>
+                            <key>CFBundleURLName</key>
+                            <string>com.wifiaudiostreaming.pairing</string>
+                            <key>CFBundleURLSchemes</key>
+                            <array>
+                              <string>wifiaudio</string>
+                            </array>
+                          </dict>
+                        </array>
+                    """.trimIndent()
+                }
+            }
+
+            linux {
+                iconFile.set(project.file("src/main/resources/app_icon.png"))
+                packageName = "wifi-audio-streaming"
+                appCategory = "AudioVideo"
+            }
+        }
+    }
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
+// ─── Archivi portabili (.zip / .tar.gz) ───────────────────────────────────────
+// Compose Desktop produce solo gli installer nativi (msi/deb/rpm/dmg) e una
+// cartella scompattata in build/compose/binaries/main/app/. Queste task ne
+// creano archivi portabili, etichettati per OS e architettura.
+val portableLabel = "$nativeOsDir-$nativeArchDir"
+val portableAppDir = layout.buildDirectory.dir("compose/binaries/main-release/app")
+val portableOutDir = layout.buildDirectory.dir("packages")
+
+val packageZip by tasks.registering(Zip::class) {
+    group = "distribution"
+    description = "Crea uno .zip portabile dell'app"
+    dependsOn("createReleaseDistributable")
+    from(portableAppDir)
+    destinationDirectory.set(portableOutDir)
+    archiveFileName.set("WiFi-Audio-Streaming-$displayVersion-$portableLabel.zip")
+}
+
+val packageTarGz by tasks.registering(Tar::class) {
+    group = "distribution"
+    description = "Crea un .tar.gz portabile dell'app"
+    dependsOn("createReleaseDistributable")
+    from(portableAppDir)
+    destinationDirectory.set(portableOutDir)
+    archiveFileName.set("WiFi-Audio-Streaming-$displayVersion-$portableLabel.tar.gz")
+    compression = Compression.GZIP
+}
+
+val packagePortableArchives by tasks.registering {
+    group = "distribution"
+    description = "Crea sia lo .zip sia il .tar.gz portabili"
+    dependsOn(packageZip, packageTarGz, "generateDisplayVersionFile")
+}
+
+// ─── Man page installation ────────────────────────────────────────────────────
+
+val manPageSrc = file("src/main/resources/man/wfas.1")
+
+tasks.register<Copy>("installManPage") {
+    description = "Install wfas.1 man page to /usr/local/share/man/man1/"
+    group       = "install"
+    onlyIf { isLinux || isMac }
+
+    from(manPageSrc)
+    into(if (isLinux) "/usr/share/man/man1" else "/usr/local/share/man/man1")
+
+    doLast {
+        if (isLinux) {
+            exec {
+                commandLine("mandb")
+                isIgnoreExitValue = true
+            }
+        } else {
+            exec {
+                commandLine("makewhatis", "/usr/local/share/man")
+                isIgnoreExitValue = true
+            }
+        }
+        println("[man] wfas.1 installed. Run 'man wfas' to read it.")
+    }
+}
+
+tasks.register<Copy>("packageManPage") {
+    description = "Copy wfas.1 into the build output for inclusion in packages"
+    group       = "build"
+
+    from(manPageSrc)
+    into("${layout.buildDirectory.get()}/man/man1")
+}
+
+tasks.named("build") {
+    dependsOn("packageManPage")
+}
+
+tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask> {
+    dependsOn("packageManPage")
+}
+
+if (isWindows) {
+    afterEvaluate {
+        listOf("createDistributable", "createReleaseDistributable").forEach { taskName ->
+            tasks.findByName(taskName)?.doLast {
+                val javaExeSrc = File(System.getProperty("java.home"), "bin\\java.exe")
+                if (!javaExeSrc.exists()) {
+                    logger.warn("[wfas] java.exe non trovato in ${javaExeSrc.absolutePath} — il comando wfas potrebbe non funzionare")
+                    return@doLast
+                }
+                val suffix = if (taskName.contains("release", ignoreCase = true)) "main-release" else "main"
+                val appDir = layout.buildDirectory.dir("compose/binaries/$suffix/app").get().asFile
+                appDir.listFiles()
+                    ?.filter { it.isDirectory }
+                    ?.forEach { appSubDir ->
+                        val binDir = File(appSubDir, "runtime\\bin")
+                        if (binDir.exists()) {
+                            javaExeSrc.copyTo(File(binDir, "java.exe"), overwrite = true)
+                            logger.lifecycle("[wfas] Copiato java.exe -> ${binDir.absolutePath}")
+                        }
+                        val wfasCmd = File(appSubDir, "wfas.cmd")
+                        wfasCmd.writeText(
+                            "@echo off\r\n" +
+                            "setlocal\r\n" +
+                            "set \"APPHOME=%~dp0\"\r\n" +
+                            "\"%APPHOME%runtime\\bin\\java.exe\" -Dskiko.library.path=\"%APPHOME%app\" -Dcompose.application.resources.dir=\"%APPHOME%app\\resources\" -cp \"%APPHOME%app\\*\" MainKt %*\r\n" +
+                            "endlocal\r\n"
+                        )
+                        logger.lifecycle("[wfas] Creato wfas.cmd -> ${wfasCmd.absolutePath}")
+                    }
+            }
+        }
+    }
+}

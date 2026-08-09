@@ -1,0 +1,1039 @@
+.\" WiFi Audio Streaming — manual page
+.\" Copyright (c) 2026 Marco Morosi. Licensed under EUPL-1.2.
+.\"
+.TH WFAS 1 "2026" "1.0.0" "WiFi Audio Streaming"
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH NAME
+.\"
+wfas \- stream audio over a local Wi\-Fi network
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH SYNOPSIS
+.\"
+.B wfas
+.RB [ --gui | --cli ]
+.RB [ --mode
+.IR server | client | discover ]
+.RI [ OPTIONS ]
+.br
+.B wfas
+.B control
+.IR volume " <0\-100> | mute | unmute | stop | status"
+.br
+.B wfas
+.B config
+.IR list | get | set | path | edit | reset | export | import
+.br
+.B wfas
+.B pair
+.IR invite | regenerate | "connect <link>" | "inspect <link>" | "encode <text>" | status | off | register | unregister
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH DESCRIPTION
+.\"
+.B wfas
+transmits audio from one device (server) to one or more receivers (clients)
+on the same local network using the WFAS protocol.
+It also supports RTP, HTTP, DLNA and Snapcast streaming as optional additional
+protocols.
+.PP
+Run without arguments,
+.B wfas
+prints its help and exits.
+Use
+.B --cli
+(or
+.BR --server )
+to start in CLI mode without loading any graphical interface,
+making it suitable for use on headless systems such as Raspberry Pi or in
+automation scripts.
+.PP
+When a display is available,
+.B --gui
+opens the full graphical interface.
+Combining
+.B --gui
+with
+.B --mode
+opens the GUI and immediately starts the corresponding operation,
+as if the user had clicked the Start button.
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH MODES
+.\"
+.TP
+.B server
+Capture audio from the system's default audio output (or a virtual cable)
+and stream it to connected clients.
+This is the default mode when no
+.B --mode
+flag is provided.
+In unicast the server accepts
+.B one
+client at a time: while a session is active it stops announcing itself on the
+network and answers any other device with
+.BR WFAS_BUSY ,
+leaving the running session untouched.
+In multicast there is no such limit.
+.TP
+.B client
+Receive audio from a server and play it on a local output device.
+If the chosen server is already streaming to another device in unicast, the
+connection attempt fails immediately with
+.I "That server is already streaming to another device"
+instead of waiting for the timeout.
+If
+.B --server
+is omitted,
+.B wfas
+scans the network for available servers and connects automatically
+when only one is found, or presents an interactive list otherwise.
+.TP
+.B discover
+Scan the network and print available servers.
+With
+.B --watch
+the scan continues until the process is interrupted.
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH OPTIONS
+.\"
+.SS Entry point
+.TP
+.B --gui
+Open the graphical interface.
+.TP
+.B --cli
+Start in CLI mode (explicit).
+.\"
+.SS Mode selection
+.TP
+\fB--mode\fR \fIserver\fR|\fIclient\fR|\fIdiscover\fR
+Select the operating mode.
+.\"
+.SS Server options
+.TP
+\fB--port\fR \fIn\fR
+WFAS streaming port (default:
+.IR 9090 ).
+.TP
+\fB--mic-port\fR \fIn\fR
+Port used to receive microphone audio from clients (default:
+.IR 9092 ).
+.TP
+.B --multicast
+Enable multicast transmission.
+Automatically set when
+.B --rtp
+or
+.B --http
+is used.
+.TP
+.B --rtp
+Enable RTP side-channel.
+Allows any RTP-capable player (e.g. VLC) to receive the audio stream.
+Implies
+.BR --multicast .
+.TP
+\fB--rtp-port\fR \fIn\fR
+RTP destination port (default:
+.IR 9094 ).
+.TP
+.B --http
+Enable HTTP streaming (AAC chunked + Opus WebSocket).
+Implies
+.BR --multicast .
+.TP
+\fB--http-port\fR \fIn\fR
+HTTP server port (default:
+.IR 8080 ).
+.TP
+.B --http-safari
+Enable the Safari-compatible AAC stream on the HTTP server.
+Implies
+.BR --http ,
+which in turn forces multicast.
+.TP
+.B --snapcast
+Act as a Snapcast server for synchronised multiroom playback.
+Any snapclient on the network (Raspberry Pi, ESP32, Home Assistant, the
+Snapcast mobile apps) can join and stay in sync.
+Implies
+.BR --multicast ,
+so the native WFAS session can keep serving other clients at the same time.
+.TP
+\fB--snapcast-port\fR \fIn\fR
+Snapcast audio stream port (default:
+.IR 1704 ).
+.TP
+\fB--snapcast-control-port\fR \fIn\fR
+Snapcast JSON-RPC control port (default:
+.IR 1705 ).
+Clients such as Home Assistant and the official Snapcast apps use this port to
+manage groups, per-client volume and latency.
+.TP
+\fB--snapcast-codec\fR \fIcodec\fR
+One of
+.IR pcm ", " flac " or " opus
+(default:
+.IR pcm ).
+.I flac
+roughly halves the bandwidth at the cost of about 25 ms of encoding delay.
+.I opus
+requires 48000 Hz stereo 16 bit input; when the audio settings do not match,
+the server falls back to
+.IR pcm .
+.TP
+\fB--snapcast-chunk\fR \fIn\fR
+Chunk size in milliseconds:
+.IR 10 ", " 20 ", " 40 " or " 60
+(default:
+.IR 20 ).
+.TP
+\fB--snapcast-buffer\fR \fIn\fR
+Playback buffer advertised to clients, in milliseconds (default:
+.IR 1000 ).
+Higher values survive worse networks, lower values react faster.
+.TP
+\fB--snapcast-name\fR \fIname\fR
+Stream identifier advertised to clients (default:
+.IR default ).
+.TP
+.B --sdp
+Print the SDP session descriptor to standard output when the server starts.
+Only meaningful with
+.BR --rtp .
+.TP
+\fB--sdp-out\fR \fIpath\fR
+Write the SDP session descriptor to
+.I path
+in addition to printing it.
+.\"
+.SS Client options
+.TP
+\fB--connect\fR \fIip\fR
+IP address of the server to connect to.
+Implies client mode when no explicit mode is given.
+If omitted,
+.B wfas
+performs automatic discovery.
+.TP
+\fB--output\fR \fIname\fR
+Name (or substring) of the audio output device to use.
+Uses the system default when omitted.
+To list available devices run
+.B wfas --mode discover --json
+and look at
+.IR serverAudioSettings .
+.\"
+.SS Microphone options (client-to-server return channel)
+These options send the client's microphone back to the server (talkback),
+independently of the main server-to-client audio stream.
+.TP
+.B --mic
+Enable microphone return.
+.TP
+\fB--mic-input\fR \fIname\fR
+Name (or substring) of the microphone device.
+Uses the system default when omitted.
+.TP
+\fB--mic-routing\fR \fImode\fR
+How the microphone is routed on the server side.
+.RS
+.TP
+.B mix
+Mix microphone into the outgoing audio stream (default when
+.B --mic
+is used).
+.TP
+.B virtual
+Route microphone to a virtual output device (e.g. CABLE Input).
+.TP
+.B off
+Disable microphone routing.
+.RE
+.\"
+.SS Audio options
+.TP
+\fB--volume\fR \fIn\fR
+Initial volume as a percentage from 0 to 100 (default:
+.IR 100 ).
+.TP
+.B --mute
+Start with audio muted.
+.\"
+.SS Runtime control
+These subcommands communicate with a running
+.B wfas
+instance via an IPC socket and exit immediately.
+.TP
+\fBcontrol volume\fR \fIn\fR
+Set the volume to
+.I n
+percent (0\-100).
+.TP
+.B control mute
+Mute the audio.
+.TP
+.B control unmute
+Unmute the audio.
+.TP
+.B control stop
+Stop the current stream without closing the process.
+.TP
+.B control status
+Print the current status as JSON, including mode, volume, mute state,
+port, protocols enabled, uptime, and PID.
+.\"
+.SS Configuration
+These subcommands read and write the persistent settings file
+.RB ( config.json )
+shared by the CLI and the GUI, then exit.
+Changes take effect the next time a server or client starts, or the next time
+the GUI is opened.
+Add
+.B --json
+to any of them for machine-readable output.
+.TP
+.B config list
+Print every setting and its current value, grouped by section.
+.TP
+\fBconfig get\fR \fIkey\fR
+Print the value of one setting, for example
+.BR audio.sampleRate .
+.TP
+\fBconfig set\fR \fIkey\fR \fIvalue\fR
+Change one setting and save it.
+The value is validated against the setting's type and range.
+.TP
+.B config path
+Print the absolute path of the settings file resolved for the current system.
+.TP
+.B config edit
+Open the settings file in an editor.
+Uses
+.B $VISUAL
+or
+.B $EDITOR
+when set, otherwise the operating system's default handler for the file.
+.TP
+.B config reset
+Restore every setting to its default value.
+.TP
+\fBconfig export\fR [\fIfile\fR]
+Write the current settings to
+.I file
+as JSON, or to standard output when
+.I file
+is omitted.
+.TP
+\fBconfig import\fR \fIfile\fR
+Load a JSON settings file and make it the active configuration.
+.\"
+.SS QR pairing
+.B wfas pair
+hands a receiver everything it needs in one shot: address, port, and a freshly
+generated 256\-bit key.
+The key is never typed by the user and never travels on the wire: the invite
+carries it, and the mutual HMAC challenge\-response of
+.B --protocol
+proves it.
+Invites are valid for 120 seconds.
+.PP
+Generating an invite switches this device to key authentication and stores the
+generated key in the settings file, leaving any manually typed key untouched so
+that turning pairing off restores it.
+When a
+.B wfas
+instance is already running, the invite is produced by that instance over the IPC
+channel, so it matches the live session; otherwise it is produced offline and
+saved to the configuration, ready for the next
+.BR "wfas --server" .
+.TP
+.B pair invite
+Generate an invite and draw it as a QR code on the terminal.
+In multicast, an invite reuses the current generated key when there is one, so
+inviting somebody does not disconnect the listeners already playing.
+.TP
+.B pair regenerate
+Same, but always with a brand new key.
+In multicast this evicts every listener still using the old key, which is the
+point after handing the code to the wrong person.
+Aliases:
+.BR rekey ", " new-key .
+.TP
+\fBpair connect\fR \fIlink\fR
+Join using an invite link, in either the
+.B wifiaudio://pair?
+or the
+.B https://
+form.
+Starts the client with the key already applied.
+Fails with a distinct message when the invite has expired, instead of reporting a
+wrong key.
+.TP
+\fBpair inspect\fR \fIlink\fR
+Decode a link and print what it contains, without connecting.
+The key is masked unless
+.B --show-key
+is given.
+Exits with status 1 when the invite has expired.
+Alias:
+.BR check .
+.TP
+\fBpair encode\fR \fItext\fR
+Render arbitrary text as a QR code on the terminal.
+.TP
+.B pair status
+Print the pairing state: whether QR pairing is on, whether the stored key was
+generated or typed, and whether the
+.B wifiaudio://
+handler is registered with this system.
+It also prints the command that scheme is actually registered to open. If that
+line is missing, or does not end in
+.BR \(dq%1\(dq ,
+the handler is broken and the browser will appear to do nothing when the pairing
+page tries to open the app: run
+.B pair register
+to repair it.
+.TP
+.B pair off
+Turn QR pairing off and restore the manually typed key, if there was one.
+.TP
+.B pair register
+Register the
+.B wifiaudio://
+scheme with the operating system, per user and without administrator rights
+(Windows registry under
+.BR HKCU ", "
+a
+.B .desktop
+file on Linux; on macOS the scheme is declared in the bundle's
+.BR Info.plist ", "
+so nothing is needed).
+.IP
+You should never need this. Every run of
+.B wfas
+checks the registration in the background and rewrites it when it is missing
+.I or when it points at a different executable
+than the one running, so moving, reinstalling or updating the app repairs itself
+on the next launch. A stale registration is worse than none: it still looks valid
+and simply opens nothing. This subcommand exists to force that repair immediately
+and to see it fail with a reason.
+.IP
+On Windows the registration is applied by importing a generated
+.B .reg
+file rather than by passing values to
+.BR reg.exe .
+The command to register is
+.RB \(lq "\(dqC:\(rspath\(rsapp.exe\(dq \(dq%1\(dq" \(rq,
+which contains both spaces and quotes; passing that as a single argument does not
+survive Windows command-line quoting, and the value lands in the registry
+truncated, without the
+.B %1
+that carries the invite. Inside a file the quoting never crosses a command line.
+.TP
+.B pair unregister
+Remove that registration.
+.TP
+.B --watch
+Only with
+.BR "pair invite" :
+keep the code on screen with a live countdown and renew it automatically when it
+expires.
+While watching, press
+.B n
+for a new invite,
+.B r
+for a new key,
+.B k
+to reveal or hide the key, and
+.B q
+to quit, each followed by Enter.
+.TP
+.B --json
+Emit the invite as a single JSON object
+.RB ( uri ", " deeplink ", " key ", " ip ", " port ", " mode ", " expires_at ", "
+.BR expires_in ", " ttl ", " source )
+instead of drawing anything.
+.TP
+.B --quiet
+Print only the invite link, one line, nothing else.
+Useful for piping into another QR renderer.
+.\"
+.SS QR rendering options
+The terminal renderer prints one character per two vertical modules using the
+half\-block characters U+2580 and U+2584, which corrects for the roughly 2:1
+aspect ratio of a terminal cell.
+An invite needs 61 columns, 65 with an IPv6 address, so it fits an 80\-column
+window; when it does not, the code is replaced by a message saying how many
+columns are missing, and the link is still printed.
+It is 31 to 33 rows tall, so on a 24\-row terminal the code scrolls off: in that
+case
+.B --watch
+keeps only the countdown on the bottom line instead of repainting the whole
+panel in place.
+.TP
+.B --qr
+Server mode only: generate a 256\-bit key, start the server with it, and print
+the pairing QR once streaming is up.
+It implies
+.B --auth-mode key
+and
+.BR --encrypt ,
+and therefore does not need
+.BR --auth-key :
+the whole point is that the code carries a key nobody has to type.
+The key is generated before the server starts, so the very first packet on the
+wire is already encrypted; an existing generated key is reused instead of being
+rotated, so restarting the server does not evict listeners.
+The interactive keys
+.B p
+(new invite) and
+.B r
+(new key) are then accepted alongside
+.B q
+and
+.BR v .
+.PP
+.B --encrypt
+on its own is rejected: ChaCha20\-Poly1305 needs a key, and a server started with
+an empty one would authenticate nobody. Pass
+.B --auth-key
+or
+.BR --qr .
+.TP
+.B --no-qr
+Print only the link, without the ASCII art.
+.TP
+.B --plain
+Use two characters per module instead of half\-blocks.
+Needed when the terminal font lacks U+2580 and U+2584; it requires twice the
+width.
+Selected automatically when the locale and
+.B file.encoding
+suggest the terminal is not UTF\-8.
+.TP
+.B --invert
+Invert the code, for terminals with a light background.
+.TP
+.B --show-key
+Print the pairing key instead of masking it.
+.\"
+.SS Discover options
+Discovery prints one row per server in a table with the columns
+.BR HOST ", " IP ", " MODE " (RTP, HTTP, UDP, or UDP/M for multicast), and "
+.B SECURITY
+.RB ( None ", " Authentication ", or " Encryption ).
+.B Encryption
+is reported only for key-authenticated servers that also encrypt the audio;
+a server that merely authorizes or asks for a key reports
+.BR Authentication .
+.TP
+.B --watch
+Keep scanning continuously instead of exiting after 5 seconds.
+.TP
+.B --json
+Output results as newline-delimited JSON objects instead of the table.
+Each object carries the same fields plus
+.BR port ", " multicast ", and " protocols .
+.\"
+.SS Link options (transport and address family)
+.TP
+.B --usb
+Stream over the USB cable instead of Wi\-Fi.
+Enable USB tethering on the Android phone: the phone acts as gateway and the app
+locates the resulting network interface on its own, so the wire protocol is
+unchanged \(em only the path differs.
+Jitter is far steadier than on Wi\-Fi, which is what makes a shorter buffer safe.
+Not available on macOS, which has no built\-in RNDIS driver, so Android USB
+tethering never comes up there.
+Overrides the stored
+.B net.usbMode
+for this run only.
+.TP
+.B --no-usb
+Force the USB link off even when enabled in the configuration.
+.TP
+\fB--usb-latency\fR \fIms\fR
+Jitter buffer applied only while the USB link is up (default:
+.IR 20 ,
+range 5\-120).
+The Wi\-Fi buffer selected with
+.B --latency
+is left untouched, so the two transports keep independent depths.
+Implies
+.BR --usb .
+.TP
+\fB--wfas-mode\fR \fImode\fR
+Controls when this device serves the native WFAS protocol:
+.RS
+.TP
+.B always
+Always, both over Wi\-Fi and over the cable.
+.TP
+.B not-on-usb
+Served over Wi\-Fi, but suppressed as soon as the USB link comes up (default).
+Useful to keep the phone from being reachable over the network while it is
+wired.
+.TP
+.B off
+Never served over Wi\-Fi; only the cable and the other protocols remain.
+.RE
+.IP
+With
+.B off
+and neither
+.BR --rtp ", " --http
+nor a USB link there is nothing left to serve, and the server refuses to start
+rather than running silently.
+.TP
+.BR --ip4 ", " --ipv4
+Restrict the app to IPv4: bind
+.IR 0.0.0.0 ,
+announce and listen on the
+.I 239.255.0.1
+multicast group only.
+.TP
+.BR --ip6 ", " --ipv6
+Restrict the app to IPv6: use the
+.I [ff02::5746]
+multicast group only.
+.IP
+With neither flag the app is dual\-stack: it binds the wildcard address, joins
+both groups, and for each peer keeps the most usable address it hears \(em a
+routable IPv4 or IPv6 wins over a link\-local one.
+Force a family only to work around a broken network; on an IPv6\-only LAN the
+automatic behaviour already selects IPv6.
+.\"
+.SS Global options
+.TP
+\fB--interface\fR \fIname\fR
+Name of the network interface to use (default:
+.IR Auto ,
+which picks the active non-virtual interface automatically).
+.TP
+\fB--config\fR \fIpath\fR
+Load settings from
+.I path
+instead of the default settings store.
+Useful when running multiple instances with different configurations.
+.TP
+.B --json
+Emit all output as newline-delimited JSON.
+Useful for scripting and monitoring pipelines.
+.TP
+.B --quiet
+Suppress informational output.
+Only errors are written to standard error.
+.TP
+.BR --legacy-engine ", " --no-native-engine
+(Server only.)
+Use the legacy FFmpeg audio grabber instead of the native C audio engine.
+.PP
+The native engine is the default on all three platforms:
+.RS
+.TP
+.B Windows
+WASAPI exclusive loopback \[em] no virtual driver required.
+.TP
+.B macOS
+ScreenCaptureKit \[em] system audio capture.
+.TP
+.B Linux
+PulseAudio/PipeWire via
+.BR dlopen (3),
+automatically mutes the default speaker sink
+while streaming and restores it on exit.
+.RE
+.PP
+Use
+.B --legacy-engine
+on Linux when PulseAudio or PipeWire is not available
+(e.g.\& ALSA-only minimal systems), or as a fallback if the native
+engine fails to initialise.
+.B --no-native-engine
+is a legacy alias for the same flag.
+.TP
+\fB--viz\fR [\fItheme\fR]
+Draw an animated ASCII spectrum histogram of the audio being streamed, plus a
+per-channel level meter. The optional
+.I theme
+is either a hex colour (e.g.\&
+.BR "#1e88e5" )
+which recolours the whole view from that seed, or the literal
+.BR rainbow
+for an animated hue sweep. Press
+.B q
+to quit and
+.B v
+to adjust the volume without leaving the view.
+.TP
+\fB--groove\fR [\fIamount\fR]
+(Requires
+.BR --viz .)
+Adaptive spectrum instead of raw levels. A plain FFT display is dominated by
+low frequencies, which carry most of the energy in nearly all music: the bass
+bars sit pinned at full scale and everything else collapses into a static
+blob. With
+.B --groove
+each band is judged relative to its own context rather than in absolute terms:
+.RS
+.IP \(bu 3
+each band is compared with its frequency neighbours, so a note that pokes out
+of its region is amplified while broadband noise stays flat;
+.IP \(bu 3
+a slow envelope per band is subtracted, so the constant part of the spectrum
+stops dominating and the low bars no longer sit pinned at full scale.
+.PP
+The net effect is that the display tracks the melody and the rhythm rather than
+the raw energy. Everything is relative, so silence stays silent: a gate fades
+the processing out when there is no signal, and no noise is invented.
+.PP
+The optional
+.I amount
+is
+.BR soft ", " normal " or " hard
+(equivalently a number from 0 to 160, where 100 is
+.BR normal ).
+Press
+.B g
+inside the visualizer to toggle the effect on and off while it runs, which is
+the easiest way to see what it does.
+.RE
+.TP
+.BR --monitor ", " --listen
+(Requires
+.BR --viz .)
+Do not start a server: just visualize the system audio through loopback
+capture, leaving the system volume untouched.
+.TP
+.B --protocol
+Print an explanation of the WFAS v2 wire protocol (packet format, control
+messages, version negotiation) and exit.
+.TP
+.B --licenses
+Print the third-party open-source licenses (including the FFmpeg/LGPL notice)
+and exit. See also the
+.B LICENSING
+section below.
+.TP
+.B --help
+Print usage information and exit.
+.TP
+.B --version
+Print the version string and exit.
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH IPC CONTROL
+.\"
+When
+.B wfas
+starts it creates a file
+.IR /tmp/wfas-<pid>.port
+containing the TCP port number of its local IPC socket.
+The
+.B control
+subcommand reads this file, connects to the socket, and sends a JSON command.
+.PP
+.B pair invite
+uses the same socket: when an instance is running it asks that process to mint
+the invite, so the key and the multicast epoch match the live session rather than
+a stale copy read from the settings file.
+With no instance running it falls back to generating the invite locally.
+.PP
+If multiple
+.B wfas
+instances are running simultaneously, the control command targets the most
+recently started instance.
+A future
+.B --pid
+option will allow targeting a specific instance by PID.
+.PP
+The IPC socket listens only on the loopback interface and is not accessible
+from other machines.
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH FILES
+.\"
+.TP
+.I ~/.config/wfas/config.json
+User settings (Linux; honors
+.BR $XDG_CONFIG_HOME ).
+.TP
+.I ~/Library/Application Support/wfas/config.json
+User settings (macOS).
+.TP
+.I %APPDATA%\ewfas\econfig.json
+User settings (Windows).
+.IP
+The settings file is a single JSON document shared by the CLI and the GUI.
+Inspect or edit it with
+.B wfas config
+(see COMMANDS), or override its location with
+.BR --config .
+Run
+.B wfas config path
+to print the exact path resolved for the current system.
+.TP
+.I /tmp/wfas-<pid>.port
+IPC port file created by each running instance.
+Deleted automatically on exit.
+.TP
+.I /tmp/stream.sdp
+RTP session descriptor written when
+.B --rtp
+is active.
+Used by external players.
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH EXIT STATUS
+.\"
+.TP
+.B 0
+Success.
+.TP
+.B 1
+General error (bad arguments, port conflict, device not found, etc.).
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH EXAMPLES
+.\"
+Start a CLI server on the default port:
+.PP
+.RS
+.B wfas --cli
+.RE
+.PP
+Print the WFAS v2 protocol reference:
+.PP
+.RS
+.B wfas --protocol
+.RE
+.PP
+Serve over the USB cable, with an aggressive buffer:
+.PP
+.RS
+.B wfas --server --usb --usb-latency 10
+.RE
+.PP
+Receive on an IPv6\-only network:
+.PP
+.RS
+.B wfas --client --ip6
+.RE
+.PP
+List servers with transport and address family:
+.PP
+.RS
+.B wfas discover --json
+.RE
+.PP
+Start a server with RTP enabled and print the SDP to stdout:
+.PP
+.RS
+.B wfas --mode server --rtp --sdp
+.RE
+.PP
+Pipe the SDP directly into VLC:
+.PP
+.RS
+.B wfas --mode server --rtp --sdp | vlc -
+.RE
+.PP
+Write the SDP to a file for later use:
+.PP
+.RS
+.B wfas --mode server --rtp --sdp-out /tmp/stream.sdp
+.RE
+.PP
+Connect as a client to a specific server:
+.PP
+.RS
+.B wfas --connect 192.168.1.42
+.RE
+.PP
+Connect and specify the output device:
+.PP
+.RS
+.B wfas --connect 192.168.1.42 --output "Built-in Audio"
+.RE
+.PP
+Discover servers and output JSON (useful for scripts):
+.PP
+.RS
+.B wfas --mode discover --json
+.RE
+.PP
+Keep the discovery running and monitor in real time:
+.PP
+.RS
+.B wfas --mode discover --watch
+.RE
+.PP
+Open the GUI and start the server immediately:
+.PP
+.RS
+.B wfas --gui --mode server --multicast
+.RE
+.PP
+Open the GUI and connect to a specific server immediately:
+.PP
+.RS
+.B wfas --gui --mode client --connect 192.168.1.42
+.RE
+.PP
+Set volume to 60% on a running instance:
+.PP
+.RS
+.B wfas control volume 60
+.RE
+.PP
+Check the status of the running instance:
+.PP
+.RS
+.B wfas control status
+.RE
+.PP
+Run as a systemd service on Raspberry Pi (example unit file):
+.PP
+.RS
+.nf
+[Unit]
+Description=WiFi Audio Streaming Server
+After=network.target sound.target
+
+[Service]
+ExecStart=/opt/wfas/bin/wfas --mode server --multicast
+Restart=on-failure
+RestartSec=5
+User=pi
+
+[Install]
+WantedBy=multi-user.target
+.fi
+.RE
+.PP
+Monitor volume from a shell script:
+.PP
+.RS
+.nf
+while true; do
+    wfas control status --json | jq -r .volume
+    sleep 5
+done
+.fi
+.RE
+.PP
+Start a server and show its pairing code, refreshed as it expires:
+.PP
+.RS
+.nf
+wfas --server --multicast --qr
+.fi
+.RE
+.PP
+Show a live pairing code for an already running server:
+.PP
+.RS
+.B wfas pair invite --watch
+.RE
+.PP
+Hand the invite to another tool instead of drawing it:
+.PP
+.RS
+.nf
+wfas pair invite --quiet | qrencode -t ANSIUTF8
+wfas pair invite --json | jq -r .key
+.fi
+.RE
+.PP
+Join from a link, and check it first if in doubt:
+.PP
+.RS
+.nf
+wfas pair inspect "$LINK" && wfas pair connect "$LINK"
+.fi
+.RE
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH NOTES
+.\"
+On Linux the native C audio engine uses
+.BR dlopen (3)
+to load
+.B libpulse-simple.so.0
+at runtime.
+No link-time dependency is required; the
+.B libaudio_engine.so
+bundled in the package works on any distribution.
+If
+.B libpulse-simple
+is not installed, start the server with
+.B --legacy-engine
+to use the FFmpeg backend instead, and install
+.B pulseaudio-utils
+(Debian/RPi OS) or
+.B pipewire-pulseaudio
+(Fedora/Arch) to enable the native engine.
+.PP
+On Windows, some firewalls block multicast packets.
+If clients cannot discover the server, try disabling multicast with
+.B --multicast
+omitted and providing the server IP explicitly via
+.B --connect
+on the client side.
+.PP
+A unicast server is bound to the address of its connected client for the whole
+session: control messages arriving from any other address are discarded, so a
+third device on the LAN cannot terminate someone else's session.
+To serve several listeners at once, use multicast.
+.PP
+The
+.B --sdp
+flag generates an SDP descriptor based on the configured audio settings.
+The payload type is L16 (raw PCM) over RTP.
+Most players including VLC, ffplay, and GStreamer support this format.
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH LICENSING
+.\"
+.B wfas
+itself is licensed under the European Union Public Licence (EUPL) version 1.2.
+.PP
+It bundles third-party open-source software. In particular it uses
+.B FFmpeg
+.RI ( https://ffmpeg.org )
+for AAC/Opus audio encoding, distributed under the GNU Lesser General Public
+Licence (LGPL) version 2.1 or later; some optional FFmpeg components may be
+under the GPL. The FFmpeg native libraries are unmodified and are provided by
+the JavaCPP Presets project
+.RI ( https://github.com/bytedeco/javacpp-presets );
+their source code is available at
+.IR https://ffmpeg.org/download.html .
+.PP
+Other bundled components include JavaCV/JavaCPP, JetBrains Compose
+Multiplatform, Kotlin and kotlinx.coroutines, Ktor, Bouncy Castle, dorkbox
+SystemTray, JNA and SLF4J. Run
+.B wfas --licenses
+for the full attribution list, or see
+.B THIRD_PARTY_LICENSES.md
+in the project repository.
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH SEE ALSO
+.\"
+.BR vlc (1),
+.BR ffplay (1),
+.BR gst-launch-1.0 (1),
+.BR aplay (1),
+.BR systemctl (1)
+.\"
+.\" ─────────────────────────────────────────────────────────────────────────────
+.SH AUTHOR
+.\"
+Marco Morosi.
+Licensed under the European Union Public Licence (EUPL), version 1.2.
+.br
+.I https://joinup.ec.europa.eu/software/page/eupl
