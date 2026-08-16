@@ -1,6 +1,9 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.gradle.api.tasks.bundling.Compression
 import java.io.ByteArrayOutputStream
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
+import java.util.zip.ZipEntry
 
 plugins {
     kotlin("jvm") version "2.1.0"
@@ -316,6 +319,39 @@ compose.desktop {
 
 kotlin {
     jvmToolchain(17)
+}
+
+tasks.register("fixUberJarSignatures") {
+    dependsOn("packageReleaseUberJarForCurrentOS")
+    doLast {
+        val jarFile = layout.buildDirectory.file("compose/jars/WiFi Audio Streaming-windows-x64-5.1.0-release.jar").get().asFile
+        if (jarFile.exists()) {
+            val tempZip = File(jarFile.parentFile, "temp_clean.jar")
+            val zipIn = ZipInputStream(jarFile.inputStream())
+            val zipOut = ZipOutputStream(tempZip.outputStream())
+            var entry = zipIn.nextEntry
+            val buffer = ByteArray(8192)
+            while (entry != null) {
+                val name = entry.name
+                if (!name.endsWith(".SF") && !name.endsWith(".DSA") && !name.endsWith(".RSA")) {
+                    zipOut.putNextEntry(ZipEntry(name))
+                    var bytesRead = zipIn.read(buffer)
+                    while (bytesRead > 0) {
+                        zipOut.write(buffer, 0, bytesRead)
+                        bytesRead = zipIn.read(buffer)
+                    }
+                    zipOut.closeEntry()
+                }
+                zipIn.closeEntry()
+                entry = zipIn.nextEntry
+            }
+            zipIn.close()
+            zipOut.close()
+            jarFile.delete()
+            tempZip.renameTo(jarFile)
+            println("[UberJar] Successfully stripped third-party signature files from ${jarFile.name}")
+        }
+    }
 }
 
 // ─── Archivi portabili (.zip / .tar.gz) ───────────────────────────────────────
